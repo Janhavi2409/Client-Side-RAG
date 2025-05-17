@@ -145,7 +145,7 @@ function App() {
         // Look for break characters in the last 20% of the chunk
         const lookaheadSize = Math.min(Math.floor(size * 0.2), 100); // Limit lookahead size
         const minEndIndex = Math.max(i, endIndex - lookaheadSize);
-        
+
         // Search backwards from endIndex to find a natural break
         for (let j = endIndex; j > minEndIndex; j--) {
           if (breakChars.includes(text[j])) {
@@ -178,7 +178,7 @@ function App() {
 
       // Move the start position, accounting for overlap
       i = endIndex - overlap;
-      
+
       // Ensure we're making progress
       if (i <= 0 || i >= text.length || i === endIndex) {
         i = endIndex; // Skip overlap if it would cause issues
@@ -286,7 +286,7 @@ function App() {
   // Enhanced fallback method for keyword-based search
   const createKeywordVector = (text) => {
     if (!text) return {};
-    
+
     // Extract important keywords and their frequencies
     const words = text.toLowerCase()
       .replace(/[^\w\s]/g, ' ')  // Replace punctuation with spaces
@@ -372,8 +372,8 @@ function App() {
     // Check file type first
     const validTypes = ['text/plain', 'text/csv'];
     const validExtensions = ['.txt', '.csv'];
-    if (!validTypes.includes(file.type) && 
-        !validExtensions.some(ext => file.name.toLowerCase().endsWith(ext))) {
+    if (!validTypes.includes(file.type) &&
+      !validExtensions.some(ext => file.name.toLowerCase().endsWith(ext))) {
       setError('Invalid file type. Please upload .txt or .csv files.');
       return;
     }
@@ -635,7 +635,7 @@ function App() {
 
         // Only include results with reasonable similarity
         const filteredResults = results.filter(doc => doc.similarity > 0.2);
-        
+
         if (filteredResults.length > 0) {
           setSearchResults(filteredResults);
         } else {
@@ -659,7 +659,7 @@ function App() {
   const performKeywordSearch = () => {
     // Create a keyword vector for the query
     const queryVector = createKeywordVector(searchQuery);
-    
+
     // Check if we have any keywords in the query
     if (Object.keys(queryVector).length === 0) {
       setSearchResults([]);
@@ -719,63 +719,63 @@ function App() {
     setLoading(true);
     setError('');
     setAnswer('');
-    
+
     try {
       // Make sure we have a valid model
       let modelToUse = selectedModel;
-      
-      // If the model isn't available, find a fallback
-      if (!availableModels.includes(selectedModel)) {
-        // Try to find a smaller model first
-        const smallerModels = ['phi2', 'tinyllama', 'mistral-tiny', 'gemma:2b'];
-        for (const model of smallerModels) {
-          if (availableModels.some(m => m === model || m.startsWith(model))) {
-            modelToUse = availableModels.find(m => m === model || m.startsWith(model));
-            setError(`Selected model not available. Using ${modelToUse} instead.`);
-            break;
-          }
-        }
-        
-        // If no smaller model, use any available model
-        if (!availableModels.includes(modelToUse) && availableModels.length > 0) {
-          modelToUse = availableModels[0];
-          setError(`Selected model not available. Using ${modelToUse} instead.`);
-        }
-        
-        // If no models at all, return error
-        if (!modelToUse || availableModels.length === 0) {
-          throw new Error('No language models available. Please pull a model using Ollama CLI.');
-        }
-        
-        // Update selected model for future use
-        setSelectedModel(modelToUse);
-      }
+      let fallbackAttempted = false;
 
-      // Prepare context from search results - only use relevant parts
-      const context = searchResults
-        .map(doc => doc.content)
-        .join('\n\n');
+      // If the model isn't available or is too large, find a fallback
+      const modelPriorityList = [
+        'phi2',        // ~2GB
+        'tinyllama',   // ~2GB
+        'mistral-tiny',// ~2GB
+        'gemma:2b',    // ~2GB
+        'mistral',     // ~4GB
+        'llama2',      // ~4GB
+        'phi3',        // ~4GB
+        'gemma',       // ~5GB
+        'qwen',        // ~5GB
+        'falcon'       // ~6GB
+      ];
 
-      // Improved prompt template with better instructions
-      const prompt = `You are a helpful assistant that answers questions based only on the provided context.
-
-Context information:
----------------------
-${context}
----------------------
-
-Question: ${question}
-
-Answer the question concisely based solely on the provided context. If the context doesn't contain relevant information, say "I don't have enough information to answer this question." Don't make up information not in the context. Keep your answer brief and to the point.`;
-
-      // Add error handling for the API call
-      let maxRetries = 2;
-      let retryCount = 0;
-      let success = false;
-      let responseData = null;
-      
-      while (retryCount <= maxRetries && !success) {
+      // Try up to 3 times with progressively smaller models
+      for (let attempt = 0; attempt < 3; attempt++) {
         try {
+          // On subsequent attempts, try smaller models
+          if (attempt > 0) {
+            const availableSmallerModels = modelPriorityList.filter(model =>
+              availableModels.some(m => m === model || m.startsWith(model))
+            );
+
+            if (availableSmallerModels.length > 0) {
+              modelToUse = availableSmallerModels[0];
+              fallbackAttempted = true;
+              setError(`Memory issue detected. Trying smaller model: ${modelToUse}`);
+            }
+          }
+
+          // Prepare context from search results - limit size to prevent memory issues
+          const maxContextLength = 2000; // Limit context to prevent memory overload
+          const context = searchResults
+            .slice(0, 3) // Only use top 3 results
+            .map(doc => doc.content.length > maxContextLength
+              ? doc.content.substring(0, maxContextLength) + '...'
+              : doc.content
+            )
+            .join('\n\n');
+
+          // Improved prompt template with strict instructions
+          const prompt = `Answer the question based ONLY on the following context. 
+        If you don't know the answer, say "I don't know".
+        
+        Context:
+        ${context}
+        
+        Question: ${question}
+        
+        Answer:`;
+
           const response = await fetch('http://localhost:11434/api/generate', {
             method: 'POST',
             headers: {
@@ -786,74 +786,49 @@ Answer the question concisely based solely on the provided context. If the conte
               prompt: prompt,
               stream: false,
               options: {
-                num_predict: 500, // Limit token generation to save memory
-                temperature: 0.1  // Lower temperature for more factual responses
+                num_predict: 200,  // Reduced from 500 to save memory
+                temperature: 0.3,
+                top_k: 40,
+                top_p: 0.9
               }
             }),
           });
 
           if (!response.ok) {
             const errorText = await response.text();
-            console.error(`API error (attempt ${retryCount + 1}):`, errorText);
-            
-            // Check for known errors and handle them
-            if (errorText.includes('out of memory') || errorText.includes('system memory')) {
-              // Try a smaller model on the next attempt
-              if (retryCount < maxRetries) {
-                const smallerModels = ['phi2', 'tinyllama', 'mistral-tiny', 'gemma:2b'];
-                for (const model of smallerModels) {
-                  if (availableModels.some(m => m === model || m.startsWith(model))) {
-                    modelToUse = availableModels.find(m => m === model || m.startsWith(model));
-                    setError(`Memory error with ${selectedModel}. Trying smaller model: ${modelToUse}`);
-                    break;
-                  }
-                }
-              }
-            } else if (response.status === 500) {
-              // For server errors, try with a simpler prompt
-              if (retryCount === maxRetries - 1) {
-                const simplePrompt = `Based on this context: "${context.substring(0, 1000)}...", please answer: ${question}`;
-                const simpleResponse = await fetch('http://localhost:11434/api/generate', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    model: modelToUse,
-                    prompt: simplePrompt,
-                    stream: false,
-                    options: { num_predict: 300 }
-                  }),
-                });
-                
-                if (simpleResponse.ok) {
-                  responseData = await simpleResponse.json();
-                  success = true;
-                }
-              }
-            }
-            
-            retryCount++;
-            continue;
+            throw new Error(errorText);
           }
 
-          responseData = await response.json();
-          success = true;
+          const data = await response.json();
+          setAnswer(data.response);
+
+          // If we got here successfully, break out of the retry loop
+          if (fallbackAttempted) {
+            setSelectedModel(modelToUse); // Remember the working model
+          }
+          return;
         } catch (error) {
-          console.error(`Error in attempt ${retryCount + 1}:`, error);
-          retryCount++;
-          if (retryCount > maxRetries) {
+          console.error(`Attempt ${attempt + 1} failed:`, error);
+
+          // If this was our last attempt, throw the error
+          if (attempt === 2) {
             throw error;
           }
-        }
-      }
 
-      if (responseData && responseData.response) {
-        setAnswer(responseData.response);
-      } else {
-        throw new Error('No response received from the model');
+          // Wait a bit before retrying
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
       }
     } catch (error) {
       console.error('Error generating answer:', error);
-      setError('Failed to generate answer: ' + error.message);
+
+      // Special handling for memory errors
+      if (error.message.includes('system memory')) {
+        setError('The model requires more memory than available. Try a smaller model or close other applications.');
+      } else {
+        setError('Failed to generate answer: ' + error.message);
+      }
+
       setAnswer('');
     } finally {
       setLoading(false);
@@ -877,15 +852,33 @@ Answer the question concisely based solely on the provided context. If the conte
               className="border rounded px-2 py-1"
             >
               {availableModels.length > 0 ? (
-                availableModels.map(model => (
-                  <option key={model} value={model}>{model}</option>
-                ))
+                availableModels.map(model => {
+                  // Add estimated memory requirements based on model name
+                  let memoryEstimate = '';
+                  if (model.includes('phi2') || model.includes('tinyllama') || model.includes('2b')) {
+                    memoryEstimate = ' (~2GB)';
+                  } else if (model.includes('mistral') || model.includes('llama2') || model.includes('phi3')) {
+                    memoryEstimate = ' (~4GB)';
+                  } else if (model.includes('gemma') || model.includes('qwen')) {
+                    memoryEstimate = ' (~5GB)';
+                  } else if (model.includes('falcon')) {
+                    memoryEstimate = ' (~6GB)';
+                  } else if (model.includes('7b') || model.includes('13b')) {
+                    memoryEstimate = ' (~8GB+)';
+                  }
+
+                  return (
+                    <option key={model} value={model}>
+                      {model}{memoryEstimate}
+                    </option>
+                  );
+                })
               ) : (
                 <>
-                  <option value="llama2">Llama 2</option>
-                  <option value="mistral">Mistral</option>
-                  <option value="phi3">Phi-3</option>
-                  <option value="gemma">Gemma</option>
+                  <option value="phi2">Phi-2 (~2GB)</option>
+                  <option value="tinyllama">TinyLlama (~2GB)</option>
+                  <option value="mistral">Mistral (~4GB)</option>
+                  <option value="llama2">Llama 2 (~4GB)</option>
                 </>
               )}
             </select>
@@ -1068,7 +1061,7 @@ Answer the question concisely based solely on the provided context. If the conte
 
         {/* Answer */}
         {answer && (
-          <div className="p-4 bg-blue-50 rounded border">
+          <div className="p-4 bg-blue-50 text-black rounded border">
             <h3 className="text-lg font-medium mb-2">Answer:</h3>
             <p className="whitespace-pre-wrap">{answer}</p>
           </div>
